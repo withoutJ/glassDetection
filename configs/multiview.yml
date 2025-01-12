@@ -6,6 +6,6 @@ training:
   optimizer:
     name: 'sgd'
   resume:
-  
+  print_interval: 100
   
 

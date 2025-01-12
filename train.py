@@ -10,11 +10,13 @@ import os
 import random
 import numpy as np
 import time
+import psutil
 
 from loader.dataloader import ImageDataset
 from utils.utils import get_logger, save_checkpoint, load_checkpoint
 from utils.optimizers import get_optimizer
 from evaluation.metrics import runningScore, AverageMeter, AverageMeterDict
+from models import get_model
 
 
 def setup_seeds(seed):
@@ -34,8 +36,12 @@ class Trainer:
             "cuda" if torch.cuda.is_available()
             else "cpu")
         
+        # setup training
+        self.start_epoch = 0
+        self.start_n_iter = 0
+        
         # TODO setup the right model
-        self.model = 0 
+        self.model = get_model(opt["model"]).to(self.device)
 
         self.optim = get_optimizer(self.opt)
 
@@ -53,45 +59,68 @@ class Trainer:
             )
             ckpt = load_checkpoint(self.opt["resume"])
             self.model.load_state_dict(ckpt['net'])
-            start_epoch = ckpt['epoch']+1
-            start_n_iter = ckpt['n_iter']
+            self.start_epoch = ckpt['epoch']+1
+            self.start_n_iter = ckpt['n_iter']
             self.best_iou = ckpt["best_iou"]
             self.optim.load_state_dict(ckpt['optim'])
             self.logger.info("Last checkpoint restored")
             self.logger.info(
-                "Loaded checkpoint '{}' (iter {})".format(self.opt["training"]["resume"], start_epoch)
+                "Loaded checkpoint '{}' (iter {})".format(self.opt["training"]["resume"], self.start_epoch)
             )
         else:
             self.logger.info("No checkpoint found at '{}'".format(self.opt["training"]["resume"]))
     
-    def train_step(inputs):
-        pass
+    def train_step(self, inputs, step):
+        self.model.train()
+
 
     
     def train(self):
-        start_n_iter = 0
-        start_epoch = 0
+        self.start_n_iter = 0
+        self.start_epoch = 0
         if self.opt["training"]["resume"] is not None:
             self.load_resume()
 
         train_loss_meter = AverageMeterDict()
         time_meter = AverageMeter()
 
-        for epoch in range(start_epoch, opt["training"]["epochs"]):
+        for epoch in range(self.start_epoch, opt["training"]["epochs"]):
             pbar = tqdm(enumerate(self.train_dataloader), total=len(self.train_dataloader))
-            start_time = time.time()
-
             for i, inputs in pbar:
-                loss = self.train_step(inputs)
+                step = epoch*len(pbar) + i
+                start_time = time.time()
+
+                loss = self.train_step(inputs, step)
 
                 time_meter.update(time.time() - start_time)
                 train_loss_meter.update(loss)
                 
+
                 
-                start_time = time.time()
+                if (step+1) % self.opt["trainig"]["print_interval"] == 0:
+                    progress_str = (
+                        f'Epoch: {epoch}/{self.opt["training"]["epochs"]}], '
+                        f'Loss: {train_loss_meter.avgs["total_loss"]:.4f}, '
+                        f'Time/Image: {time_meter.avg / self.cfg["training"]["batch_size"]:.4f}'
+                    )
+                    pbar.set_description(progress_str)
+                    pbar.refresh()
+                    self.logger.info(progress_str)
+
+                    for k, v in train_loss_meter.avgs.items():
+                        self.writer.add_scalar("training/" + k, v, step + 1)
+                    self.writer.add_scalar("training/time_per_image", time_meter.avg / self.opt["training"]["batch_size"], step + 1)
+                    self.writer.add_scalar("training/memory", psutil.virtual_memory().used / 1e9, step + 1)
+                    time_meter.reset()
+                    train_loss_meter.reset()
+                
+                # TODO validation
+
+                        
 
     def validate(self, step):
-        pass
+        self.model.eval()
+
 
 def main(opt):
     run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
