@@ -5,7 +5,22 @@ training:
   amp: True
   optimizer:
     name: 'sgd'
+    lr: 1.0e-3
+    weight_decay: 0.0005
+    momentum: 0.9
   resume:
   print_interval: 100
+  batch_size: 2
+  val_batch_size: 2
+  num_workers: 8
+  lr_schedule:
+  monodepth_lambda: 0.0
+  feat_dist_lambda: 0.0
+data:
+  dataset: vgsd
+  height: 416
+  weidth: 416
+  shuffle_trainset: True
+
   
 

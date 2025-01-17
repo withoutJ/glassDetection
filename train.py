@@ -2,6 +2,7 @@ import argparse
 import torch
 import torchvision.transforms.v2 as transforms
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 import yaml
 from datetime import datetime
@@ -11,19 +12,26 @@ import random
 import numpy as np
 import time
 import psutil
+from copy import deepcopy
 
 from loader.dataloader import ImageDataset
 from utils.utils import get_logger, save_checkpoint, load_checkpoint
 from utils.optimizers import get_optimizer
 from evaluation.metrics import runningScore, AverageMeter, AverageMeterDict
 from models import get_model
-
+from loader import build_dataset
+from loss import get_glass_detection_loss, get_monodepth_loss
+from utils.schedulers import get_scheduler
 
 def setup_seeds(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+# TODO Return dictioniary with all trainig params
+def get_train_params(model, opt):
+    pass
 
 class Trainer:
     def __init__(self, opt, writer, logger):
@@ -36,6 +44,8 @@ class Trainer:
             "cuda" if torch.cuda.is_available()
             else "cpu")
         
+        self.IoU = 0
+        
         # setup training
         self.start_epoch = 0
         self.start_n_iter = 0
@@ -43,12 +53,42 @@ class Trainer:
         # TODO setup the right model
         self.model = get_model(opt["model"]).to(self.device)
 
-        self.optim = get_optimizer(self.opt)
+        # Setup optimizer
+        optimizer_cls = get_optimizer(self.opt)
+        optimizer_params = {k: v for k, v in self.opt["training"]["optimizer"].items() if
+                            k not in ["name", "backbone_lr", "pose_lr", "depth_lr", "segmentation_lr"]}
+        train_params = get_train_params(self.model, self.opt)
+        self.optimizer = optimizer_cls(train_params, **optimizer_params)
+
+        self.scheduler = get_scheduler(self.optimizer, self.opt["training"]["lr_schedule"])
 
         # TODO setup dataloader correctly
-        self.train_dataloader = 0
+        data_opt = deepcopy(self.opt["data"])
+        self.train_dataset = build_dataset(data_opt, split="train")
+        self.test_dataset = build_dataset(data_opt, split="test")
 
-        self.scaler = torch.GradScaler('cuda', enabled = self.opt['training']['amp'])
+        self.train_dataloader = DataLoader(
+            self.train_dataset,
+            batch_size=self.opt["training"]["batch_size"],
+            num_workers=self.opt["training"]["num_workers"],
+            shuffle=self.opt["data"]["shuffle_trainset"],
+            pin_memory=True,
+            drop_last=True)
+        self.test_dataloader = DataLoader(
+            self.test_dataset,
+            batch_size=self.opt["training"]["val_batch_size"],
+            num_workers=self.opt["training"]["n_workers"],
+            pin_memory=True)
+
+        self.scaler = torch.GradScaler('cuda', enabled = self.opt["training"]["amp"])
+
+        # Setup losses
+        self.loss_fn = get_glass_detection_loss(self.opt)
+        self.monodepth_loss_calculator_train = get_monodepth_loss(self.opt, is_train=True)
+        self.monodepth_loss_calculator_val = get_monodepth_loss(self.opt, is_train=False, batch_size=self.val_batch_size)
+
+        # TODO Add early stopping
+        self.earlyStopping = None
 
         setup_seeds(opt.get("seed", 42))
     
@@ -73,7 +113,48 @@ class Trainer:
     def train_step(self, inputs, step):
         self.model.train()
 
+        for k, v in inputs.items():
+            if torch.is_tensor(v):
+                inputs[k] = v.to(self.device, non_blocking=True)
+        
+        self.optimizer.zero_grad()
 
+
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            outputs = self.model(inputs)
+
+        # TODO turn off trainig when freezing the backbone
+
+        # Train monodepth
+        if self.cfg["training"]["monodepth_lambda"] > 0:
+            for k, v in outputs.items():
+                if "depth" in k or "cam_T_cam" in k:
+                    outputs[k] = v.to(torch.float32)
+            self.monodepth_loss_calculator_train.generate_images_pred(inputs, outputs)
+            mono_losses = self.monodepth_loss_calculator_train.compute_losses(inputs, outputs)
+            mono_lambda = self.opt["training"]["monodepth_lambda"]
+            mono_loss = mono_lambda * mono_losses["loss"]
+            feat_dist_lambda = self.opt["training"]["feat_dist_lambda"]
+            if feat_dist_lambda > 0:
+                feat_dist = torch.dist(outputs["encoder_features"], outputs["imnet_features"], p=2)
+                feat_dist_loss = feat_dist_lambda * feat_dist
+            mono_total_loss = mono_loss + feat_dist_loss
+
+            self.scaler.scale(mono_total_loss).backward(retain_graph=True)
+
+
+        # TODO Train glass detection
+
+
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        if isinstance(self.scheduler, ReduceLROnPlateau):
+            self.scheduler.step(metrics=self.IoU)
+        else:
+            self.scheduler.step()
+
+        # TODO return all needed losses
+        return {}
     
     def train(self):
         self.start_n_iter = 0

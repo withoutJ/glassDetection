@@ -9,9 +9,9 @@ import numpy as np
 def listdirs_only(folder):
     return [d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))]
 
-class GSDVideoDataset(data.Dataset):
-    def __init__(self, root, joint_transform = None, input_transform = None, target_transform = None):
-        self.root = root
+class VGSDDataset(data.Dataset):
+    def __init__(self, root, split="train", joint_transform = None, input_transform = None, target_transform = None):
+        self.root = os.path.join(root, split)
         self.joint_transform = joint_transform
         self.input_transform = input_transform
         self.target_transform = target_transform
