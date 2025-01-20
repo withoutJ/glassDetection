@@ -51,7 +51,7 @@ class Trainer:
         self.start_n_iter = 0
         
         # TODO setup the right model
-        self.model = get_model(opt["model"]).to(self.device)
+        self.model = get_model(self.opt["model"]).to(self.device)
 
         # Setup optimizer
         optimizer_cls = get_optimizer(self.opt)

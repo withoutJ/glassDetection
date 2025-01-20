@@ -1,4 +1,13 @@
 seed: 42
+model:
+  arch: glass_detection_with_depth
+  backbone_name: resnet50
+  backbone_pretraining: imnet
+  depth_pretraining: none
+  pose_pretraining: none
+  enable_imnet_encoder: False
+  segmentation_name: joint_seg_depth_dec
+
 training:
   epochs: 10
   log_path: 'runs'
